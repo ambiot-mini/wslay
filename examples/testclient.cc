@@ -151,6 +151,7 @@ public:
       ;
     return r;
   }
+
   ssize_t feed_body(uint8_t *data, size_t len) {
     if (body_off_ < body_.size()) {
       size_t wlen = std::min(len, body_.size() - body_off_);
@@ -292,7 +293,7 @@ std::string get_random16() {
   f.read(buf, 16);
   return std::string(buf, buf + 16);
 }
-
+/** send the req key and  verify the res key is the same as the req key.*/
 int http_handshake(int fd, const char *host, const char *service,
                    const char *path, std::string &body) {
   char buf[4096];
@@ -348,6 +349,7 @@ void ctl_epollev(int epollfd, int op, WebSocketClient &ws) {
 
 int communicate(const char *host, const char *service, const char *path,
                 const struct wslay_event_callbacks *callbacks) {
+
   struct wslay_event_callbacks cb = *callbacks;
   cb.recv_callback = feed_body_callback;
   int fd = connect_to(host, service);
@@ -361,6 +363,7 @@ int communicate(const char *host, const char *service, const char *path,
     close(fd);
     return -1;
   }
+  // set the socket option.
   make_non_block(fd);
   int val = 1;
   if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &val, (socklen_t)sizeof(val)) ==
@@ -368,6 +371,7 @@ int communicate(const char *host, const char *service, const char *path,
     perror("setsockopt: TCP_NODELAY");
     return -1;
   }
+  // 
   WebSocketClient ws(fd, &cb, body);
   if (ws.on_read_event() == -1) {
     return -1;
@@ -403,7 +407,9 @@ int communicate(const char *host, const char *service, const char *path,
   }
   return ok ? 0 : -1;
 }
-
+/**
+ * @brief get the count of test cases.
+*/
 int get_casecnt(const char *host, const char *service) {
   struct wslay_event_callbacks callbacks = {
       recv_callback,
