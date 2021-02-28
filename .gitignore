@@ -41,3 +41,4 @@ doc/sphinx/_build
 /lib/libwslay.a
 /wslay-config.cmake
 /wslay.cmake
+build
