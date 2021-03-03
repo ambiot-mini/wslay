@@ -52,6 +52,17 @@
 #include <nettle/sha.h>
 #include <wslay/wslay.h>
 
+#include <mbedtls/ssl.h>
+#include <mbedtls/net_sockets.h>
+
+
+struct wss_tls{
+	mbedtls_ssl_context ctx;
+	mbedtls_ssl_config conf;
+	mbedtls_net_context socket;
+};
+
+
 int connect_to(const char *host, const char *service) {
   struct addrinfo hints;
   int fd = -1;
@@ -129,7 +140,7 @@ class WebSocketClient {
 public:
   WebSocketClient(int fd, struct wslay_event_callbacks *callbacks,
                   const std::string &body)
-      : fd_(fd), body_(body), body_off_(0), dev_urand_("/dev/urandom") {
+      : fd_(fd), body_(body), body_off_(0), dev_urand_("/dev/urandom"), counter(0){
     wslay_event_context_client_init(&ctx_, callbacks, this);
   }
   ~WebSocketClient() {
@@ -177,13 +188,22 @@ public:
   void set_callbacks(const struct wslay_event_callbacks *callbacks) {
     wslay_event_config_set_callbacks(ctx_, callbacks);
   }
-
+  void test_echo(void){
+    char echoBuf[128];
+    #define ECHO_STRING "echo"
+    sprintf(echoBuf, "%s:%d", "echo", counter);
+    struct wslay_event_msg msgarg = {1, (uint8_t*)echoBuf, strlen(echoBuf)+1};
+    printf("send msg, opcode:%d, str:%s, length:%d\n", msgarg.opcode, msgarg.msg, msgarg.msg_length);
+    wslay_event_queue_msg(ctx_, &msgarg);
+    counter++;
+  }
 private:
   int fd_;
   wslay_event_context_ptr ctx_;
   std::string body_;
   size_t body_off_;
   std::fstream dev_urand_;
+  int counter;
 };
 
 ssize_t send_callback(wslay_event_context_ptr ctx, const uint8_t *data,
@@ -245,7 +265,8 @@ void get_casecnt_on_msg_recv_callback(
     wslay_event_context_ptr ctx, const struct wslay_event_on_msg_recv_arg *arg,
     void *user_data) {
   if (arg->opcode == WSLAY_TEXT_FRAME) {
-    casecntjson.assign(arg->msg, arg->msg + arg->msg_length);
+    //casecntjson.assign(arg->msg, arg->msg + arg->msg_length);
+    printf("received: %s\n", arg->msg);
   }
 }
 
@@ -353,6 +374,7 @@ int communicate(const char *host, const char *service, const char *path,
   struct wslay_event_callbacks cb = *callbacks;
   cb.recv_callback = feed_body_callback;
   int fd = connect_to(host, service);
+
   if (fd == -1) {
     std::cerr << "Could not connect to the host" << std::endl;
     return -1;
@@ -363,6 +385,7 @@ int communicate(const char *host, const char *service, const char *path,
     close(fd);
     return -1;
   }
+  std::cerr << "handshake done" << std::endl;
   // set the socket option.
   make_non_block(fd);
   int val = 1;
@@ -387,11 +410,20 @@ int communicate(const char *host, const char *service, const char *path,
   static const size_t MAX_EVENTS = 1;
   epoll_event events[MAX_EVENTS];
   bool ok = true;
+  
+  
+  std::cerr << "polling start" << std::endl;
   while (ws.want_read() || ws.want_write()) {
-    int nfds = epoll_wait(epollfd, events, MAX_EVENTS, -1);
+    int nfds = epoll_wait(epollfd, events, MAX_EVENTS, 1000);
+    //std::cerr << "wait" << std::endl;
+    //printf("nfds:%x\n", nfds);
     if (nfds == -1) {
       perror("epoll_wait");
       return -1;
+
+    }else if (nfds == 0){
+      std::cerr << "echo start" << std::endl;
+      ws.test_echo();
     }
     for (int n = 0; n < nfds; ++n) {
       if (((events[n].events & EPOLLIN) && ws.on_read_event() != 0) ||

@@ -53,6 +53,13 @@
 #include <nettle/sha.h>
 #include <wslay/wslay.h>
 
+#include <mbedtls/ssl.h>
+#include <mbedtls/net_sockets.h>
+#include <mbedtls/platform.h>
+#include <mbedtls/base64.h>
+#include <mbedtls/sha1.h>
+
+
 int create_listen_socket(const char *service) {
   struct addrinfo hints;
   int sfd = -1;
@@ -250,6 +257,7 @@ void on_msg_recv_callback(wslay_event_context_ptr ctx,
                           void *user_data) {
   if (!wslay_is_ctrl_frame(arg->opcode)) {
     struct wslay_event_msg msgarg = {arg->opcode, arg->msg, arg->msg_length};
+    printf("push received msg, opcode:%d, msg:%s, length:%d\n", arg->opcode, arg->msg, arg->msg_length);
     wslay_event_queue_msg(ctx, &msgarg);
   }
 }
