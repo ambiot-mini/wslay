@@ -52,8 +52,11 @@
 #include <nettle/sha.h>
 #include <wslay/wslay.h>
 
-#include <mbedtls/ssl.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/entropy.h>
 #include <mbedtls/net_sockets.h>
+#include <mbedtls/ssl.h>
+
 
 
 struct wss_tls{
@@ -61,6 +64,26 @@ struct wss_tls{
 	mbedtls_ssl_config conf;
 	mbedtls_net_context socket;
 };
+
+struct wss_tls_context{
+    IOBuffer* pReadBuffer;
+    mbedtls_ssl_context sslCtx;
+    mbedtls_ssl_config sslCtxConfig;
+    mbedtls_entropy_context entropy;
+    mbedtls_ctr_drbg_context ctrDrbg;
+    mbedtls_x509_crt cacert;
+};
+
+int init_tls_session(){
+  // initialize mbedtls stuff with sane values
+  mbedtls_entropy_init(&pTlsSession->entropy);
+  mbedtls_ctr_drbg_init(&pTlsSession->ctrDrbg);
+  mbedtls_x509_crt_init(&pTlsSession->cacert);
+  mbedtls_ssl_config_init(&pTlsSession->sslCtxConfig);
+  mbedtls_ssl_init(&pTlsSession->sslCtx);
+  CHK(mbedtls_ctr_drbg_seed(&pTlsSession->ctrDrbg, mbedtls_entropy_func, &pTlsSession->entropy, NULL, 0) == 0, STATUS_CREATE_SSL_FAILED);
+  //CHK(mbedtls_x509_crt_parse_file(&pTlsSession->cacert, KVS_CA_CERT_PATH) == 0, STATUS_INVALID_CA_CERT_PATH);/////////////
+}
 
 
 int connect_to(const char *host, const char *service) {
