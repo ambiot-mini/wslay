@@ -26,6 +26,11 @@
 // $ g++ -Wall -O2 -g -o testclient testclient.cc -L../lib/.libs -I../lib/includes -lwslay -lnettle
 // $ export LD_LIBRARY_PATH=../lib/.libs
 // $ ./a.out localhost 9001
+
+
+/*
+ * https://tls.mbed.org/kb/how-to/mbedtls-tutorial
+ */
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
@@ -51,38 +56,142 @@
 #include <nettle/base64.h>
 #include <nettle/sha.h>
 #include <wslay/wslay.h>
-
+// mbedtls
 #include <mbedtls/ctr_drbg.h>
+#include <mbedtls/debug.h>
 #include <mbedtls/entropy.h>
+#include <mbedtls/net.h>
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/ssl.h>
 
-
-
-struct wss_tls{
-	mbedtls_ssl_context ctx;
-	mbedtls_ssl_config conf;
-	mbedtls_net_context socket;
+struct tls_context{
+  // net related.
+  mbedtls_net_context socket;
+  // tls library related.
+  mbedtls_entropy_context entropy;
+  mbedtls_ctr_drbg_context ctrDrbg;
+  mbedtls_ssl_config sslConfig;
+  mbedtls_ssl_context sslCtx;
+  mbedtls_x509_crt cacert;
 };
 
-struct wss_tls_context{
-    IOBuffer* pReadBuffer;
-    mbedtls_ssl_context sslCtx;
-    mbedtls_ssl_config sslCtxConfig;
-    mbedtls_entropy_context entropy;
-    mbedtls_ctr_drbg_context ctrDrbg;
-    mbedtls_x509_crt cacert;
-};
+#define CHK_STATUS(ret) do{ \
+                          if(ret != 0){ \
+                            printf("%s(%d)error: %x\n", __func__, __LINE__, ret); \
+                          } \
+                        }while(0);
 
-int init_tls_session(){
-  // initialize mbedtls stuff with sane values
-  mbedtls_entropy_init(&pTlsSession->entropy);
-  mbedtls_ctr_drbg_init(&pTlsSession->ctrDrbg);
-  mbedtls_x509_crt_init(&pTlsSession->cacert);
-  mbedtls_ssl_config_init(&pTlsSession->sslCtxConfig);
-  mbedtls_ssl_init(&pTlsSession->sslCtx);
-  CHK(mbedtls_ctr_drbg_seed(&pTlsSession->ctrDrbg, mbedtls_entropy_func, &pTlsSession->entropy, NULL, 0) == 0, STATUS_CREATE_SSL_FAILED);
-  //CHK(mbedtls_x509_crt_parse_file(&pTlsSession->cacert, KVS_CA_CERT_PATH) == 0, STATUS_INVALID_CA_CERT_PATH);/////////////
+/**
+ * @brief
+ * 
+ * @param[in]
+ * 
+ * @return
+*/
+int tlsSession_init(struct tls_context** ppTlsConext, const char* cacertPath){
+
+  //mbedtls_platform_set_calloc_free(my_calloc, vPortFree);
+  struct tls_context* pTlsContext = (struct tls_context*)malloc(sizeof(struct tls_context));
+  // the initialization of entropy and ctrdrbg.
+  // mbedtls_net_init( &pTlsContext->socket );
+  mbedtls_entropy_init(&pTlsContext->entropy);
+  mbedtls_ctr_drbg_init(&pTlsContext->ctrDrbg);
+  CHK_STATUS(mbedtls_ctr_drbg_seed(&pTlsContext->ctrDrbg, mbedtls_entropy_func, &pTlsContext->entropy, NULL, 0));
+  // the initializatino of x509 certificate.
+  mbedtls_x509_crt_init(&pTlsContext->cacert);
+  CHK_STATUS(mbedtls_x509_crt_parse_file(&pTlsContext->cacert, cacertPath));
+  // the initialization of ssl context.
+  mbedtls_ssl_config_init(&pTlsContext->sslConfig);
+  mbedtls_ssl_init(&pTlsContext->sslCtx);
+  mbedtls_net_init(&pTlsContext->socket);
+  *ppTlsConext = pTlsContext;
+  return 0;
+}
+
+static void tlsSession_debug( void *ctx, int level, const char *file, int line, const char *str ){ 
+  ((void) level);
+  fprintf( (FILE *) ctx, "%s:%04d: %s", file, line, str );
+  fflush( (FILE *) ctx ); 
+}
+
+int tlsSession_connect(struct tls_context* pTlsContext, const char *host, const char *port){
+
+  mbedtls_net_context* pTlsSocket = &(pTlsContext->socket);
+  CHK_STATUS(mbedtls_net_connect(pTlsSocket, host, port, MBEDTLS_NET_PROTO_TCP));
+  CHK_STATUS(mbedtls_ssl_config_defaults(&pTlsContext->sslConfig, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT));
+  mbedtls_ssl_conf_ca_chain(&pTlsContext->sslConfig, &pTlsContext->cacert, NULL);
+  //#YC_TBD, need to confirm this is necessary.
+  /**
+    #define MBEDTLS_SSL_VERIFY_NONE                 0
+    #define MBEDTLS_SSL_VERIFY_OPTIONAL             1
+    #define MBEDTLS_SSL_VERIFY_REQUIRED             2
+  */
+  // #YC_TBD, 
+  mbedtls_ssl_conf_authmode(&pTlsContext->sslConfig, MBEDTLS_SSL_VERIFY_REQUIRED);
+  //mbedtls_ssl_conf_authmode(&pTlsContext->sslConfig, MBEDTLS_SSL_VERIFY_NONE);
+  // rng
+  mbedtls_ssl_conf_rng(&pTlsContext->sslConfig, mbedtls_ctr_drbg_random, &pTlsContext->ctrDrbg);
+  //mbedtls_ssl_conf_dbg( &conf, tlsSession_debug, stdout );
+  CHK_STATUS(mbedtls_ssl_setup(&pTlsContext->sslCtx, &pTlsContext->sslConfig));
+  //mbedtls_ssl_set_mtu(&pTlsContext->sslCtx, DEFAULT_MTU_SIZE);
+  //mbedtls_ssl_set_bio(&pTlsContext->sslCtx, pTlsContext, (mbedtls_ssl_send_t*)tlsSessionSendCallback, (mbedtls_ssl_recv_t*)tlsSessionReceiveCallback, NULL);
+  mbedtls_ssl_set_bio(&pTlsContext->sslCtx, &pTlsContext->socket, mbedtls_net_send, mbedtls_net_recv, NULL);
+
+  CHK_STATUS(mbedtls_ssl_handshake(&pTlsContext->sslCtx));
+  //sslCtx.state == MBEDTLS_SSL_HANDSHAKE_OVER
+  //CHK(sslRet == MBEDTLS_ERR_SSL_WANT_READ || sslRet == MBEDTLS_ERR_SSL_WANT_WRITE, STATUS_TLS_SSL_HANDSHAKE_FAILED);
+  //LOG_MBEDTLS_ERROR("mbedtls_ssl_handshake", sslRet);
+  return 0;
+
+}
+
+/**
+ * @brief when socket connection is ready, we have to dispatch the data from the sock connection to the corresponding handler.
+ *        Note:: If mbedtls_ssl_read() or mbedtls_ssl_write() returns an error, the connection must be closed.
+ * 
+ * @param[in] pTlsContext
+ * @param[in] pBuf the address of this buffer.
+ * @param[in] bufLen the maximum length of this data buffer.
+ * @param[in] pReadLen the length of the data inside this buffer.
+ * 
+ * @return
+*/
+int tlsSession_recv(struct tls_context* pTlsContext, uint8_t* pBuf, uint32_t bufLen){
+	int ret;
+
+	ret = mbedtls_ssl_read(&pTlsContext->sslCtx, (unsigned char*)pBuf, bufLen);
+	if(ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE
+			|| ret == MBEDTLS_ERR_NET_RECV_FAILED)
+		ret = 0;
+	return ret;
+}
+
+/**
+ * @brief 
+ * 
+ * @param[in]
+ * 
+ * @return
+*/
+int tlsSession_send(struct tls_context* pTlsContext, const uint8_t* buf, uint32_t bufLen){
+  //mbedtls_ssl_write
+  int ret;
+  ret = mbedtls_ssl_write(&pTlsContext->sslCtx, (unsigned char const*)buf, bufLen);
+	if(ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
+		ret = 0;
+
+	return ret;
+}
+
+
+int tlsSession_close(struct tls_context* pTlsContext){
+  mbedtls_ssl_close_notify(&pTlsContext->sslCtx);
+  mbedtls_net_free( &pTlsContext->socket );
+  mbedtls_ssl_free( &pTlsContext->sslCtx );
+  mbedtls_ssl_config_free( &pTlsContext->sslConfig );
+  mbedtls_ctr_drbg_free( &pTlsContext->ctrDrbg );
+  mbedtls_entropy_free( &pTlsContext->entropy );
+  return 0;
 }
 
 
@@ -162,9 +271,10 @@ std::string create_acceptkey(const std::string &clientkey) {
 class WebSocketClient {
 public:
   WebSocketClient(int fd, struct wslay_event_callbacks *callbacks,
-                  const std::string &body)
-      : fd_(fd), body_(body), body_off_(0), dev_urand_("/dev/urandom"), counter(0){
+                  const std::string &body, struct tls_context* tlsContext)
+      : fd_(fd), body_(body), body_off_(0), dev_urand_("/dev/urandom"), counter(0), tls(NULL){
     wslay_event_context_client_init(&ctx_, callbacks, this);
+    tls = tlsContext;
   }
   ~WebSocketClient() {
     wslay_event_context_free(ctx_);
@@ -181,7 +291,9 @@ public:
       sflags |= MSG_MORE;
     }
 #endif // MSG_MORE
-    while ((r = send(fd_, data, len, sflags)) == -1 && errno == EINTR)
+    //while ((r = send(fd_, data, len, sflags)) == -1 && errno == EINTR)
+    
+    while ((r = tlsSession_send(tls, data, len)) == -1 && errno == EINTR)
       ;
     return r;
   }
@@ -198,7 +310,8 @@ public:
   }
   ssize_t recv_data(uint8_t *data, size_t len, int flags) {
     ssize_t r;
-    while ((r = recv(fd_, data, len, 0)) == -1 && errno == EINTR)
+    //while ((r = recv(fd_, data, len, 0)) == -1 && errno == EINTR)
+    while ((r = tlsSession_recv(tls, data, len)) == -1 && errno == EINTR)
       ;
     return r;
   }
@@ -220,6 +333,9 @@ public:
     wslay_event_queue_msg(ctx_, &msgarg);
     counter++;
   }
+  struct tls_context* get_tls(void){
+    return tls;
+  }
 private:
   int fd_;
   wslay_event_context_ptr ctx_;
@@ -227,6 +343,7 @@ private:
   size_t body_off_;
   std::fstream dev_urand_;
   int counter;
+  struct tls_context* tls;
 };
 
 ssize_t send_callback(wslay_event_context_ptr ctx, const uint8_t *data,
@@ -376,6 +493,90 @@ int http_handshake(int fd, const char *host, const char *service,
   }
 }
 
+int send_https_handshake(struct tls_context* pTlsContext, const std::string &reqheader) {
+  size_t off = 0;
+  while (off < reqheader.size()) {
+    ssize_t r;
+    size_t len = reqheader.size() - off;
+
+    //while ((r = write(fd, reqheader.c_str() + off, len)) == -1 &&
+    while ((r = tlsSession_send(pTlsContext, (const uint8_t*)reqheader.c_str() + off, len)) == -1 &&
+           errno == EINTR)
+      ;
+    if (r == -1) {
+      perror("write");
+      return -1;
+    }
+    off += r;
+  }
+  return 0;
+}
+
+int recv_https_handshake(struct tls_context* pTlsContext, std::string &resheader) {
+  char buf[4096];
+  while (1) {
+    ssize_t r;
+
+    //while ((r = read(fd, buf, sizeof(buf))) == -1 && errno == EINTR)
+    while ((r = tlsSession_recv(pTlsContext, (uint8_t*)buf, sizeof(buf))) == -1 && errno == EINTR)
+      ;
+    if (r <= 0) {
+      return -1;
+    }
+    resheader.append(buf, buf + r);
+    if (resheader.find("\r\n\r\n") != std::string::npos) {
+      break;
+    }
+    if (resheader.size() > 8192) {
+      std::cerr << "Too big response header" << std::endl;
+      return -1;
+    }
+  }
+  return 0;
+}
+
+
+
+/** send the req key and  verify the res key is the same as the req key.*/
+int https_handshake(struct tls_context* pTlsContext, const char *host, const char *service,
+                   const char *path, std::string &body) {
+  char buf[4096];
+  std::string client_key = base64(get_random16());
+  snprintf(buf, sizeof(buf),
+           "GET %s HTTP/1.1\r\n"
+           "Host: %s:%s\r\n"
+           "Upgrade: websocket\r\n"
+           "Connection: Upgrade\r\n"
+           "Sec-WebSocket-Key: %s\r\n"
+           "Sec-WebSocket-Version: 13\r\n"
+           "\r\n",
+           path, host, service, client_key.c_str());
+  std::string reqheader = buf;
+  if (send_https_handshake(pTlsContext, reqheader) == -1) {
+    return -1;
+  }
+  std::string resheader;
+  if (recv_https_handshake(pTlsContext, resheader) == -1) {
+    return -1;
+  }
+  std::string::size_type keyhdstart;
+  if ((keyhdstart = resheader.find("Sec-WebSocket-Accept: ")) ==
+      std::string::npos) {
+    std::cerr << "http_upgrade: missing required headers" << std::endl;
+    return -1;
+  }
+  keyhdstart += 22;
+  std::string::size_type keyhdend = resheader.find("\r\n", keyhdstart);
+  std::string accept_key = resheader.substr(keyhdstart, keyhdend - keyhdstart);
+  if (accept_key == create_acceptkey(client_key)) {
+    body = resheader.substr(resheader.find("\r\n\r\n") + 4);
+    return 0;
+  } else {
+    return -1;
+  }
+}
+
+
 void ctl_epollev(int epollfd, int op, WebSocketClient &ws) {
   epoll_event ev;
   memset(&ev, 0, sizeof(ev));
@@ -391,19 +592,32 @@ void ctl_epollev(int epollfd, int op, WebSocketClient &ws) {
   }
 }
 
+/**
+ * @brief
+ * 
+ * @param[in]
+ * 
+ * @return
+*/
 int communicate(const char *host, const char *service, const char *path,
-                const struct wslay_event_callbacks *callbacks) {
+                const struct wslay_event_callbacks *callbacks, const char* cacertPath) {
 
   struct wslay_event_callbacks cb = *callbacks;
   cb.recv_callback = feed_body_callback;
-  int fd = connect_to(host, service);
+  struct tls_context* pTlsContext = NULL;
+  tlsSession_init(&pTlsContext, cacertPath);
+  tlsSession_connect(pTlsContext, host, service);
+  
+  std::cerr << "tls done" << std::endl;
+
+  int fd = pTlsContext->socket.fd;//connect_to(host, service);
 
   if (fd == -1) {
     std::cerr << "Could not connect to the host" << std::endl;
     return -1;
   }
   std::string body;
-  if (http_handshake(fd, host, service, path, body) == -1) {
+  if (https_handshake(pTlsContext, host, service, path, body) == -1) {
     std::cerr << "Failed handshake" << std::endl;
     close(fd);
     return -1;
@@ -418,7 +632,7 @@ int communicate(const char *host, const char *service, const char *path,
     return -1;
   }
   // 
-  WebSocketClient ws(fd, &cb, body);
+  WebSocketClient ws(fd, &cb, body, pTlsContext);
   if (ws.on_read_event() == -1) {
     return -1;
   }
@@ -465,7 +679,7 @@ int communicate(const char *host, const char *service, const char *path,
 /**
  * @brief get the count of test cases.
 */
-int get_casecnt(const char *host, const char *service) {
+int get_casecnt(const char *host, const char *service, char* cacerPath) {
   struct wslay_event_callbacks callbacks = {
       recv_callback,
       send_callback,
@@ -474,7 +688,7 @@ int get_casecnt(const char *host, const char *service) {
       NULL, /* on_frame_recv_callback */
       NULL, /* on_frame_recv_end_callback */
       get_casecnt_on_msg_recv_callback};
-  if (communicate(host, service, "/getCaseCount", &callbacks) == -1) {
+  if (communicate(host, service, "/getCaseCount", &callbacks, cacerPath) == -1) {
     return -1;
   }
   errno = 0;
@@ -497,7 +711,7 @@ int run_testcase(const char *host, const char *service, int casenum) {
       on_msg_recv_callback};
   char buf[1024];
   snprintf(buf, sizeof(buf), "/runCase?case=%d&agent=wslay", casenum);
-  return communicate(host, service, buf, &callbacks);
+  return communicate(host, service, buf, &callbacks, NULL);
 }
 int update_reports(const char *host, const char *service) {
   struct wslay_event_callbacks callbacks = {
@@ -507,7 +721,7 @@ int update_reports(const char *host, const char *service) {
       NULL, /* on_frame_recv_end_callback */
       NULL, /* on_msg_recv_callback */
   };
-  return communicate(host, service, "/updateReports?&agent=wslay", &callbacks);
+  return communicate(host, service, "/updateReports?&agent=wslay", &callbacks, NULL);
 }
 
 int main(int argc, char **argv) {
@@ -521,7 +735,8 @@ int main(int argc, char **argv) {
   sigaction(SIGPIPE, &act, 0);
   const char *host = argv[1];
   const char *service = argv[2];
-  int casecnt = get_casecnt(host, service);
+  printf("ip:%s, port:%s, cert:%s\n", argv[1], argv[2], argv[3]);
+  int casecnt = get_casecnt(host, service, argv[3]);
   if (casecnt == -1) {
     std::cerr << "Failed to get case count." << std::endl;
     exit(EXIT_FAILURE);

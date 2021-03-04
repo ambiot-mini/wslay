@@ -7,6 +7,9 @@ if(NOT HAVE_EPOLL)
 endif()
 find_package(Nettle REQUIRED)
 
+find_package(MbedTLS REQUIRED)
+
+
 if(WSLAY_STATIC)
 	set(WSLAY_TARGET "wslay")
 else()
@@ -22,5 +25,5 @@ target_include_directories(fork-echoserv PRIVATE ${NETTLE_INCLUDE_DIRS})
 target_link_libraries(fork-echoserv ${WSLAY_TARGET} ${NETTLE_LIBRARIES})
 
 add_executable(testclient testclient.cc)
-target_include_directories(testclient PRIVATE ${NETTLE_INCLUDE_DIRS})
-target_link_libraries(testclient ${WSLAY_TARGET} ${NETTLE_LIBRARIES})
+target_include_directories(testclient PRIVATE ${NETTLE_INCLUDE_DIRS} ${MBEDTLS_INCLUDE_DIRS})
+target_link_libraries(testclient ${WSLAY_TARGET} ${NETTLE_LIBRARIES} ${MBEDTLS_LIBRARIES})

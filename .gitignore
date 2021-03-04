@@ -42,3 +42,4 @@ doc/sphinx/_build
 /wslay-config.cmake
 /wslay.cmake
 build
+.vscode
