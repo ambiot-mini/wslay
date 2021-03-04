@@ -60,6 +60,166 @@
 #include <mbedtls/sha1.h>
 
 
+int tlsSession_init(){
+	int ret = 0;
+
+	mbedtls_platform_set_calloc_free(_calloc_func, vPortFree);
+	memset(&wss_certs, 0, sizeof(mbedtls_x509_crt));
+	memset(&wss_key, 0, sizeof(mbedtls_pk_context));
+	mbedtls_x509_crt_init(&wss_certs);
+	mbedtls_pk_init(&wss_key);
+
+	// set server certificate for the first certificate
+	if((ret = mbedtls_x509_crt_parse(&wss_certs, (const unsigned char *) server_cert, strlen(server_cert) + 1)) != 0) {
+		printf("\n[WS_SERVER] ERROR: mbedtls_x509_crt_parse %d\n", ret);
+		ret = -1;
+		goto exit;
+	}
+
+	// set trusted ca certificates next to server certificate
+	if((ret = mbedtls_x509_crt_parse(&wss_certs, (const unsigned char *) ca_certs, strlen(ca_certs) + 1)) != 0) {
+		printf("\n[WS_SERVER] ERROR: mbedtls_x509_crt_parse %d\n", ret);
+		ret = -1;
+		goto exit;
+	}
+
+	if((ret = mbedtls_pk_parse_key(&wss_key, (const unsigned char *) server_key, strlen(server_key) + 1, NULL, 0)) != 0) {
+		printf("\n[WS_SERVER] ERROR: mbedtls_pk_parse_key %d\n", ret);
+		ret = -1;
+		goto exit;
+	}
+
+exit:
+	if(ret) {
+		mbedtls_x509_crt_free(&wss_certs);
+		mbedtls_pk_free(&wss_key);
+	}
+
+	return ret;
+}
+
+
+int tlsSession_setup_free(){
+	mbedtls_x509_crt_free(&wss_certs);
+	mbedtls_pk_free(&wss_key);
+}
+
+int tlsSession_handshake(){
+
+	int ret = 0;
+	struct wss_tls *tls = NULL;
+	mbedtls_ssl_context *ssl;
+	mbedtls_ssl_config *conf;
+
+	if((tls = (struct wss_tls *) malloc(sizeof(struct wss_tls))) != NULL) {
+		memset(tls, 0, sizeof(struct wss_tls));
+		ssl = &tls->ctx;
+		conf = &tls->conf;
+
+		mbedtls_ssl_init(ssl);
+		mbedtls_ssl_config_init(conf);
+
+		if((ret = mbedtls_ssl_config_defaults(conf,
+				MBEDTLS_SSL_IS_SERVER,
+				MBEDTLS_SSL_TRANSPORT_STREAM,
+				MBEDTLS_SSL_PRESET_DEFAULT)) != 0) {
+
+			printf("\n[WS_SERVER] ERROR: mbedtls_ssl_config_defaults %d\n", ret);
+			ret = -1;
+			goto exit;
+		}
+
+		mbedtls_ssl_conf_authmode(conf, MBEDTLS_SSL_VERIFY_NONE);
+		mbedtls_ssl_conf_rng(conf, _random_func, NULL);
+		mbedtls_ssl_conf_ca_chain(conf, wss_certs.next, NULL);
+
+		if(secure == WS_SERVER_SECURE_TLS_VERIFY) {
+			mbedtls_ssl_conf_authmode(conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+			mbedtls_ssl_conf_verify(conf, _verify_func, NULL);
+		}
+
+		if((ret = mbedtls_ssl_conf_own_cert(conf, &wss_certs, &wss_key)) != 0) {
+			printf("\n[WS_SERVER] ERROR: mbedtls_ssl_conf_own_cert %d\n", ret);
+			ret = -1;
+			goto exit;
+		}
+
+		if((ret = mbedtls_ssl_setup(ssl, conf)) != 0) {
+			printf("\n[WS_SERVER] ERROR: mbedtls_ssl_setup %d\n", ret);
+			ret = -1;
+			goto exit;
+		}
+
+		mbedtls_ssl_set_bio(ssl, sock, mbedtls_net_send, mbedtls_net_recv, NULL);
+
+		if((ret = mbedtls_ssl_handshake(ssl)) != 0) {
+			printf("\n[WS_SERVER] ERROR: mbedtls_ssl_handshake %d\n", ret);
+			ret = -1;
+			goto exit;
+		}
+		else {
+			printf("\n[WS_SERVER] Use ciphersuite %s\n", mbedtls_ssl_get_ciphersuite(ssl));
+		}
+
+	}
+	else {
+		printf("\n[WS_SERVER] ERROR: wss malloc\n");
+		ret = -1;
+		goto exit;
+	}
+
+exit:
+	if(ret && tls) {
+		mbedtls_ssl_close_notify(ssl);
+		mbedtls_ssl_free(ssl);
+		mbedtls_ssl_config_free(conf);
+		free(tls);
+		tls = NULL;
+	}
+
+	return (void *) tls;
+}
+
+
+int tlsSession_close(){
+	struct wss_tls *tls = (struct wss_tls *) tls_in;
+	mbedtls_ssl_close_notify(&tls->ctx);
+  return 0;
+}
+
+int tlsSession_free(){
+	struct wss_tls *tls = (struct wss_tls *) tls_in;
+	mbedtls_ssl_free(&tls->ctx);
+	mbedtls_ssl_config_free(&tls->conf);
+	free(tls);
+}
+
+
+int tlsSession_write(){
+	int ret;
+	struct wss_tls *tls = (struct wss_tls *) tls_in;
+
+	ret = mbedtls_ssl_write(&tls->ctx, buf, buf_len);
+	if(ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
+		ret = 0;
+
+	return ret;
+
+}
+
+int tlsSession_read(){
+	int ret;
+	struct wss_tls *tls = (struct wss_tls *) tls_in;
+	ret = mbedtls_ssl_read(&tls->ctx, buf, buf_len);
+	if(ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE
+			|| ret == MBEDTLS_ERR_NET_RECV_FAILED)
+		ret =0;
+
+	return ret;
+}
+
+
+
 int create_listen_socket(const char *service) {
   struct addrinfo hints;
   int sfd = -1;
