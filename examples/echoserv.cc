@@ -27,6 +27,11 @@
 // g++ -Wall -O2 -g -o echoserv echoserv.cc -L../lib/.libs -I../lib/includes -lwslay -lnettle
 // $ export LD_LIBRARY_PATH=../lib/.libs
 // $ ./a.out 9000
+
+/**
+ * https://github.com/ARMmbed/mbed-os-example-tls/blob/master/tls-client/HelloHttpsClient.cpp
+ * https://dzone.com/articles/parallel-tcpip-socket-server-with-multi-threading
+*/
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
@@ -53,6 +58,10 @@
 #include <nettle/sha.h>
 #include <wslay/wslay.h>
 
+// mbedtls
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/debug.h>
+#include <mbedtls/entropy.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/platform.h>
@@ -60,51 +69,81 @@
 #include <mbedtls/sha1.h>
 
 
-int tlsSession_init(){
-	int ret = 0;
+struct tls_server_context{
+  mbedtls_entropy_context entropy;
+  mbedtls_ctr_drbg_context ctrDrbg;
+  mbedtls_ssl_config sslConfig;
+  mbedtls_ssl_context sslCtx;
+  mbedtls_x509_crt cacert; /*!< Certificates of server and CA */
+  mbedtls_pk_context private_key; /*!< Private key of server */
+};
 
-	mbedtls_platform_set_calloc_free(_calloc_func, vPortFree);
-	memset(&wss_certs, 0, sizeof(mbedtls_x509_crt));
-	memset(&wss_key, 0, sizeof(mbedtls_pk_context));
-	mbedtls_x509_crt_init(&wss_certs);
-	mbedtls_pk_init(&wss_key);
+#define CHK_STATUS(ret) do{ \
+                          if(ret != 0){ \
+                            printf("%s(%d)error: %x\n", __func__, __LINE__, ret); \
+                          } \
+                        }while(0);
 
-	// set server certificate for the first certificate
-	if((ret = mbedtls_x509_crt_parse(&wss_certs, (const unsigned char *) server_cert, strlen(server_cert) + 1)) != 0) {
-		printf("\n[WS_SERVER] ERROR: mbedtls_x509_crt_parse %d\n", ret);
-		ret = -1;
-		goto exit;
-	}
+int tlsSession_setup_init(struct tls_server_context** ppTlsContext, const char* pCacertPath, const char* pPkPath){
+  int ret = 0;
+  struct tls_server_context* pTlsContext = (struct tls_server_context*)malloc(sizeof(struct tls_server_context));
 
-	// set trusted ca certificates next to server certificate
-	if((ret = mbedtls_x509_crt_parse(&wss_certs, (const unsigned char *) ca_certs, strlen(ca_certs) + 1)) != 0) {
-		printf("\n[WS_SERVER] ERROR: mbedtls_x509_crt_parse %d\n", ret);
-		ret = -1;
-		goto exit;
-	}
+  //mbedtls_platform_set_calloc_free(_calloc_func, vPortFree);
+  mbedtls_entropy_init(&pTlsContext->entropy);
+  mbedtls_ctr_drbg_init(&pTlsContext->ctrDrbg);
+  CHK_STATUS(mbedtls_ctr_drbg_seed(&pTlsContext->ctrDrbg, mbedtls_entropy_func, &pTlsContext->entropy, NULL, 0));
+  mbedtls_x509_crt_init(&pTlsContext->cacert);
+  CHK_STATUS(mbedtls_x509_crt_parse_file(&pTlsContext->cacert, pCacertPath));
+  /**
+  // set server certificate for the first certificate
+  if((ret = mbedtls_x509_crt_parse(&wss_certs, (const unsigned char *) server_cert, strlen(server_cert) + 1)) != 0) {
+    printf("\n[WS_SERVER] ERROR: mbedtls_x509_crt_parse %d\n", ret);
+    ret = -1;
+    goto exit;
+  }
+  // set trusted ca certificates next to server certificate
+  if((ret = mbedtls_x509_crt_parse(&wss_certs, (const unsigned char *) ca_certs, strlen(ca_certs) + 1)) != 0) {
+    printf("\n[WS_SERVER] ERROR: mbedtls_x509_crt_parse %d\n", ret);
+    ret = -1;
+    goto exit;
+  }
+  */
+  mbedtls_pk_init(&pTlsContext->private_key);
+  CHK_STATUS(mbedtls_pk_parse_keyfile (&pTlsContext->private_key, pPkPath, NULL));
+  /*
+  if((ret = mbedtls_pk_parse_key(&wss_key, (const unsigned char *) server_key, strlen(server_key) + 1, NULL, 0)) != 0) {
+    printf("\n[WS_SERVER] ERROR: mbedtls_pk_parse_key %d\n", ret);
+    ret = -1;
+    goto exit;
+  }
+  */
+  mbedtls_ssl_config_init(&pTlsContext->sslConfig);
+  mbedtls_ssl_init(&pTlsContext->sslCtx);
 
-	if((ret = mbedtls_pk_parse_key(&wss_key, (const unsigned char *) server_key, strlen(server_key) + 1, NULL, 0)) != 0) {
-		printf("\n[WS_SERVER] ERROR: mbedtls_pk_parse_key %d\n", ret);
-		ret = -1;
-		goto exit;
-	}
+
 
 exit:
-	if(ret) {
-		mbedtls_x509_crt_free(&wss_certs);
-		mbedtls_pk_free(&wss_key);
-	}
+  if(ret) {
+    mbedtls_x509_crt_free(&pTlsContext->cacert);
+    mbedtls_pk_free(&pTlsContext->private_key);
+  }
 
-	return ret;
+  return ret;
 }
 
 
-int tlsSession_setup_free(){
-	mbedtls_x509_crt_free(&wss_certs);
-	mbedtls_pk_free(&wss_key);
+int tlsSession_setup_free(struct tls_server_context* pTlsContext){
+  mbedtls_x509_crt_free(&pTlsContext->cacert);
+  mbedtls_pk_free(&pTlsContext->private_key);
 }
-
-int tlsSession_handshake(){
+/**
+ * @brief
+ * 
+ * @param[in]
+ * 
+ * @return
+*/
+int tlsSession_handshake(struct tls_server_context* pTlsContext){
 
 	int ret = 0;
 	struct wss_tls *tls = NULL;
