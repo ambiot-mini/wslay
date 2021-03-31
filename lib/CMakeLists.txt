@@ -6,9 +6,9 @@ cmake_minimum_required(VERSION 2.8)
 
 set(PACKAGE_VERSION "1.0.1-DEV")
 set(INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/includes)
-set(GEN_INCLUDE_DIR ${CMAKE_CURRENT_BINARY_DIR}/includes)
+set(GEN_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/includes)
 
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Werror -pedantic-errors -Wno-long-long")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Werror -Wno-long-long")
 
 include(CheckIncludeFile)
 include(TestBigEndian)

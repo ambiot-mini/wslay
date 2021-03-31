@@ -30,7 +30,7 @@ endif()
 if (WSLAY_CONFIGURE_INSTALL)
 	include(GNUInstallDirs)
 	set(INSTALL_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/wslay)
-	install(EXPORT wslay
+	install(TARGETS wslay
 		DESTINATION ${INSTALL_CMAKE_DIR})
 	configure_file(wslay-config.cmake.in wslay-config.cmake @ONLY)
 	install(FILES ${CMAKE_CURRENT_BINARY_DIR}/wslay-config.cmake
