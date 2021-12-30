@@ -2,9 +2,6 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#cmakedefine HAVE_ARPA_INET_H
-#cmakedefine HAVE_NETINET_IN_H
-#cmakedefine HAVE_WINSOCK2_H
-#cmakedefine WORDS_BIGENDIAN
+#define HAVE_ARPA_INET_H
 
 #endif /* CONFIG_H */
